@@ -1,0 +1,3 @@
+fastapi
+uvicorn[standard]
+dvsportal>=1.3.2
