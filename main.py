@@ -26,6 +26,10 @@ def debug(x_token: str = Header(default="")):
     import dvsportal.dvsportal as dvs
     from yarl import URL
 
+    import parking
+
+    deployed = getattr(parking, "API_PATH", "ONTBREEKT — oude parking.py draait")
+
     base = URL.build(
         scheme="https",
         host=os.environ.get("DVS_HOST", "parkeerproducten.nijmegen.nl"),
@@ -33,6 +37,7 @@ def debug(x_token: str = Header(default="")):
         path=dvs.API_BASE_URI,
     )
     return "\n".join([
+        f"parking.py   : {deployed}",
         f"API_BASE_URI : {dvs.API_BASE_URI}",
         f"login        : {base.join(URL('login'))}",
         f"getbase      : {base.join(URL('login/getbase'))}",
