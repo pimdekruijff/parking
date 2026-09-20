@@ -1,9 +1,11 @@
 """
 DVSPortal-logica voor gemeente Nijmegen.
 
-Bouwt op de dvsportal-client, met twee aanpassingen voor Nijmegen:
+Bouwt op de dvsportal-client, met drie aanpassingen voor deze portaalversie:
 - de API staat onder /DVSPortal/api/ in plaats van /DVSWebAPI/api/
 - de login verwacht loginMethod als getal en een vaste permitMediaTypeID
+- er komt geen token terug; de sessie loopt via een cookie, en het login-
+  antwoord bevat de Permits al, dus login/getbase is niet nodig
 
 Volgorde is bewust: eerst kijken of het kenteken al actief is, pas daarna
 aanmelden. Daardoor is /run idempotent en kost een dubbele aanroep nooit saldo.
@@ -15,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import dvsportal.dvsportal as _dvs
 from dvsportal import DVSPortal
-from dvsportal.exceptions import DVSPortalAuthError
+from dvsportal.exceptions import DVSPortalError
 
 TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -35,15 +37,18 @@ DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
 
 
 class NijmegenPortal(DVSPortal):
-    """Eigen login: de standaardversie stuurt loginMethod als tekst en haalt
-    de media type ID op via een GET die Nijmegen niet kent."""
-
     async def token(self):
-        if self._token is not None:
-            return self._token
+        """Geen token: de aiohttp-sessie houdt het cookie vast."""
+        if self._token is None:
+            await self.update()
+        return self._token
 
-        self._default_type_id = MEDIA_TYPE_ID  # anders doet de basisklasse alsnog die GET
+    async def authorization_header(self):
+        await self.token()
+        return {}
 
+    async def update(self):
+        """Logt in en leest saldo en reserveringen uit het login-antwoord."""
         response = await self._request(
             "login",
             json={
@@ -57,18 +62,31 @@ class NijmegenPortal(DVSPortal):
                 "zipCode": None,
             },
         )
+        self._token = "cookie"
 
-        if response.get("LoginStatus") == 2:
-            raise DVSPortalAuthError(
-                f"Inloggen geweigerd: {response.get('ErrorMessage', 'onbekende reden')}"
-            )
+        permits = response.get("Permits") or []
+        if not permits:
+            raise DVSPortalError(f"Geen vergunning gevonden. Velden: {sorted(response)}")
 
-        token = response.get("Token") or response.get("token")
-        if not token:
-            raise DVSPortalAuthError(f"Geen token in antwoord: {sorted(response)}")
+        permit = permits[0]
+        media = permit["PermitMedias"][0]
 
-        self._token = token
-        return self._token
+        self._default_type_id = media.get("TypeID", MEDIA_TYPE_ID)
+        self._default_code = media.get("Code")
+        self._balance = media.get("Balance")
+        self._unit_price = permit.get("UnitPrice")
+
+        self._active_reservations = {
+            r["LicensePlate"]["Value"]: {
+                "reservation_id": r.get("ReservationID"),
+                "valid_from": r.get("ValidFrom"),
+                "valid_until": r.get("ValidUntil"),
+                "license_plate": r["LicensePlate"]["Value"],
+                "units": r.get("Units"),
+                "cost": None,
+            }
+            for r in media.get("ActiveReservations", [])
+        }
 
 
 def _norm(plate: str) -> str:
