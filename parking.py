@@ -1,8 +1,9 @@
 """
 DVSPortal-logica voor gemeente Nijmegen.
 
-Gebruikt de dvsportal-client (https://github.com/ChessSpider/py-dvsportal),
-dezelfde die onder de Home Assistant-integratie zit.
+Bouwt op de dvsportal-client, met twee aanpassingen voor Nijmegen:
+- de API staat onder /DVSPortal/api/ in plaats van /DVSWebAPI/api/
+- de login verwacht loginMethod als getal en een vaste permitMediaTypeID
 
 Volgorde is bewust: eerst kijken of het kenteken al actief is, pas daarna
 aanmelden. Daardoor is /run idempotent en kost een dubbele aanroep nooit saldo.
@@ -14,24 +15,63 @@ from zoneinfo import ZoneInfo
 
 import dvsportal.dvsportal as _dvs
 from dvsportal import DVSPortal
+from dvsportal.exceptions import DVSPortalAuthError
 
 TZ = ZoneInfo("Europe/Amsterdam")
 
 API_HOST = os.environ.get("DVS_HOST", "parkeerproducten.nijmegen.nl")
 
-# De library gaat uit van /api/ als basispad; Nijmegen hangt de API onder
-# /DVSPortal/api/. Het pad is niet instelbaar via de constructor, dus we
-# overschrijven de module-constante die _request() gebruikt.
+# Het basispad is niet instelbaar via de constructor, dus we overschrijven
+# de module-constante die _request() gebruikt.
 API_PATH = os.environ.get("DVS_API_PATH", "/DVSPortal/api/")
 _dvs.API_BASE_URI = API_PATH if API_PATH.endswith("/") else API_PATH + "/"
-IDENTIFIER = os.environ["DVS_IDENTIFIER"]  # je pas-/kaartnummer waarmee je inlogt
+
+IDENTIFIER = os.environ["DVS_IDENTIFIER"]
 PASSWORD = os.environ["DVS_PASSWORD"]
-UNTIL_TIME = os.environ.get("UNTIL_TIME", "21:00")  # einde venster, zie README
+LOGIN_METHOD = int(os.environ.get("DVS_LOGIN_METHOD", "2"))
+MEDIA_TYPE_ID = int(os.environ.get("DVS_MEDIA_TYPE_ID", "7"))
+UNTIL_TIME = os.environ.get("UNTIL_TIME", "21:00")
 DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
 
 
+class NijmegenPortal(DVSPortal):
+    """Eigen login: de standaardversie stuurt loginMethod als tekst en haalt
+    de media type ID op via een GET die Nijmegen niet kent."""
+
+    async def token(self):
+        if self._token is not None:
+            return self._token
+
+        self._default_type_id = MEDIA_TYPE_ID  # anders doet de basisklasse alsnog die GET
+
+        response = await self._request(
+            "login",
+            json={
+                "identifier": self._identifier,
+                "loginMethod": LOGIN_METHOD,
+                "password": self._password,
+                "permitMediaTypeID": MEDIA_TYPE_ID,
+                "asIdentifier": None,
+                "otp": None,
+                "resetCode": None,
+                "zipCode": None,
+            },
+        )
+
+        if response.get("LoginStatus") == 2:
+            raise DVSPortalAuthError(
+                f"Inloggen geweigerd: {response.get('ErrorMessage', 'onbekende reden')}"
+            )
+
+        token = response.get("Token") or response.get("token")
+        if not token:
+            raise DVSPortalAuthError(f"Geen token in antwoord: {sorted(response)}")
+
+        self._token = token
+        return self._token
+
+
 def _norm(plate: str) -> str:
-    """Kentekens vergelijken zonder streepjes/spaties en hoofdletterongevoelig."""
     return plate.replace("-", "").replace(" ", "").upper()
 
 
@@ -53,7 +93,7 @@ def _hhmm(value) -> str:
 async def check_and_register(plate: str) -> str:
     target = _norm(plate)
 
-    async with DVSPortal(
+    async with NijmegenPortal(
         api_host=API_HOST, identifier=IDENTIFIER, password=PASSWORD
     ) as portal:
         await portal.update()
