@@ -12,11 +12,18 @@ import os
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
+import dvsportal.dvsportal as _dvs
 from dvsportal import DVSPortal
 
 TZ = ZoneInfo("Europe/Amsterdam")
 
 API_HOST = os.environ.get("DVS_HOST", "parkeerproducten.nijmegen.nl")
+
+# De library gaat uit van /api/ als basispad; Nijmegen hangt de API onder
+# /DVSPortal/api/. Het pad is niet instelbaar via de constructor, dus we
+# overschrijven de module-constante die _request() gebruikt.
+API_PATH = os.environ.get("DVS_API_PATH", "/DVSPortal/api/")
+_dvs.API_BASE_URI = API_PATH if API_PATH.endswith("/") else API_PATH + "/"
 IDENTIFIER = os.environ["DVS_IDENTIFIER"]  # je pas-/kaartnummer waarmee je inlogt
 PASSWORD = os.environ["DVS_PASSWORD"]
 UNTIL_TIME = os.environ.get("UNTIL_TIME", "21:00")  # einde venster, zie README
