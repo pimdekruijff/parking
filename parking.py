@@ -13,6 +13,8 @@ Volgorde is bewust: eerst kijken of het kenteken al actief is, pas daarna
 aanmelden. Daardoor is /run idempotent en kost een dubbele aanroep nooit saldo.
 """
 
+import json
+import logging
 import os
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -22,6 +24,9 @@ from dvsportal import DVSPortal
 from dvsportal.exceptions import DVSPortalError
 
 TZ = ZoneInfo("Europe/Amsterdam")
+
+log = logging.getLogger("parking")
+logging.basicConfig(level=logging.INFO)
 
 API_HOST = os.environ.get("DVS_HOST", "parkeerproducten.nijmegen.nl")
 
@@ -41,8 +46,13 @@ DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
 
 
 def _iso(dt: datetime) -> str:
-    """2026-09-21T13:12:00.000+02:00 — zoals het portaal het zelf stuurt."""
-    return dt.astimezone(TZ).isoformat(timespec="milliseconds")
+    """2026-09-21T13:12:00.000+02:00 — zoals het portaal het zelf stuurt.
+
+    Seconden en milliseconden op nul: het portaal rekent in blokken van een
+    minuut en stuurt zelf ook altijd hele minuten.
+    """
+    dt = dt.astimezone(TZ).replace(second=0, microsecond=0)
+    return dt.isoformat(timespec="milliseconds")
 
 
 class NijmegenPortal(DVSPortal):
@@ -115,7 +125,14 @@ class NijmegenPortal(DVSPortal):
         if date_until is not None:
             payload["DateUntil"] = _iso(date_until)
 
-        return await self._request("reservation/create", json=payload)
+        log.info("create payload: %s", json.dumps(payload, ensure_ascii=False))
+        try:
+            response = await self._request("reservation/create", json=payload)
+        except Exception as exc:
+            log.warning("create mislukt: %s", exc)
+            raise
+        log.info("create gelukt, velden: %s", sorted(response) if isinstance(response, dict) else type(response))
+        return response
 
 
 def _norm(plate: str) -> str:
