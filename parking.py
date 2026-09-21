@@ -218,3 +218,4 @@ async def check_and_register(plate: str) -> str:
             f"✅ {plate} aangemeld tot {UNTIL_TIME or 'handmatig afmelden'}. "
             f"Saldo nu: {_fmt_balance(portal.balance)}."
         )
+
