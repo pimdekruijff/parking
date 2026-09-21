@@ -41,6 +41,7 @@ LOGIN_METHOD = int(os.environ.get("DVS_LOGIN_METHOD", "2"))
 MEDIA_TYPE_ID = int(os.environ.get("DVS_MEDIA_TYPE_ID", "7"))
 MEDIA_CODE = os.environ.get("DVS_MEDIA_CODE")  # leeg = uit het login-antwoord halen
 CAR_NAME = os.environ.get("CAR_NAME", "")
+XSRF_HEADER = os.environ.get("DVS_XSRF_HEADER", "X-XSRF-TOKEN")
 UNTIL_TIME = os.environ.get("UNTIL_TIME", "21:00")
 DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
 
@@ -124,11 +125,35 @@ class NijmegenPortal(DVSPortal):
             for r in media.get("ActiveReservations", [])
         }
 
+    def _apply_xsrf(self) -> None:
+        """Het portaal verwacht het XSRF-cookie ook terug als header
+        (double submit cookie). Zonder dit weigert create met een 401.
+
+        We zetten de header op de sessie zelf, zodat het werkt ongeacht of
+        _request headers doorgeeft."""
+        session = next(
+            (v for v in vars(self).values() if hasattr(v, "cookie_jar")), None
+        )
+        if session is None:
+            log.warning("geen sessie gevonden om xsrf-header op te zetten")
+            return
+
+        token = next(
+            (c.value for c in session.cookie_jar if "xsrf" in c.key.lower()), None
+        )
+        if not token:
+            log.warning("geen xsrf-cookie gevonden")
+            return
+
+        session.headers[XSRF_HEADER] = token
+        log.info("xsrf-header %s gezet", XSRF_HEADER)
+
     async def create_reservation(
         self, license_plate_value, date_from, date_until, license_plate_name=None
     ):
         """Zelfde payload als het portaal zelf stuurt."""
         await self.token()
+        self._apply_xsrf()
 
         payload = {
             "LicensePlate": {
@@ -218,4 +243,3 @@ async def check_and_register(plate: str) -> str:
             f"✅ {plate} aangemeld tot {UNTIL_TIME or 'handmatig afmelden'}. "
             f"Saldo nu: {_fmt_balance(portal.balance)}."
         )
-
