@@ -83,6 +83,23 @@ class NijmegenPortal(DVSPortal):
         )
         self._token = "cookie"
 
+        try:
+            session = next(
+                (
+                    v
+                    for v in vars(self).values()
+                    if hasattr(v, "cookie_jar")
+                ),
+                None,
+            )
+            if session is None:
+                log.warning("geen aiohttp-sessie gevonden op self: %s", sorted(vars(self)))
+            else:
+                names = sorted({c.key for c in session.cookie_jar})
+                log.info("cookies na login: %s", names or "LEEG")
+        except Exception as exc:  # loggen mag nooit de boel breken
+            log.warning("cookies niet uit te lezen: %s", exc)
+
         permits = response.get("Permits") or []
         if not permits:
             raise DVSPortalError(f"Geen vergunning gevonden. Velden: {sorted(response)}")
