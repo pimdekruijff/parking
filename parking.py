@@ -1,11 +1,13 @@
 """
 DVSPortal-logica voor gemeente Nijmegen.
 
-Bouwt op de dvsportal-client, met drie aanpassingen voor deze portaalversie:
+Bouwt op de dvsportal-client, met aanpassingen voor deze portaalversie:
 - de API staat onder /DVSPortal/api/ in plaats van /DVSWebAPI/api/
 - de login verwacht loginMethod als getal en een vaste permitMediaTypeID
 - er komt geen token terug; de sessie loopt via een cookie, en het login-
   antwoord bevat de Permits al, dus login/getbase is niet nodig
+- reservation/create verwacht LicensePlate als object, een permitMediaCode
+  en datums met tijdzone-offset
 
 Volgorde is bewust: eerst kijken of het kenteken al actief is, pas daarna
 aanmelden. Daardoor is /run idempotent en kost een dubbele aanroep nooit saldo.
@@ -32,8 +34,15 @@ IDENTIFIER = os.environ["DVS_IDENTIFIER"]
 PASSWORD = os.environ["DVS_PASSWORD"]
 LOGIN_METHOD = int(os.environ.get("DVS_LOGIN_METHOD", "2"))
 MEDIA_TYPE_ID = int(os.environ.get("DVS_MEDIA_TYPE_ID", "7"))
+MEDIA_CODE = os.environ.get("DVS_MEDIA_CODE")  # leeg = uit het login-antwoord halen
+CAR_NAME = os.environ.get("CAR_NAME", "")
 UNTIL_TIME = os.environ.get("UNTIL_TIME", "21:00")
 DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
+
+
+def _iso(dt: datetime) -> str:
+    """2026-09-21T13:12:00.000+02:00 — zoals het portaal het zelf stuurt."""
+    return dt.astimezone(TZ).isoformat(timespec="milliseconds")
 
 
 class NijmegenPortal(DVSPortal):
@@ -72,7 +81,7 @@ class NijmegenPortal(DVSPortal):
         media = permit["PermitMedias"][0]
 
         self._default_type_id = media.get("TypeID", MEDIA_TYPE_ID)
-        self._default_code = media.get("Code")
+        self._default_code = MEDIA_CODE or media.get("Code")
         self._balance = media.get("Balance")
         self._unit_price = permit.get("UnitPrice")
 
@@ -87,6 +96,26 @@ class NijmegenPortal(DVSPortal):
             }
             for r in media.get("ActiveReservations", [])
         }
+
+    async def create_reservation(
+        self, license_plate_value, date_from, date_until, license_plate_name=None
+    ):
+        """Zelfde payload als het portaal zelf stuurt."""
+        await self.token()
+
+        payload = {
+            "LicensePlate": {
+                "Value": license_plate_value,
+                "Name": license_plate_name or CAR_NAME or license_plate_value,
+            },
+            "permitMediaTypeID": MEDIA_TYPE_ID,
+            "permitMediaCode": self._default_code,
+            "DateFrom": _iso(date_from),
+        }
+        if date_until is not None:
+            payload["DateUntil"] = _iso(date_until)
+
+        return await self._request("reservation/create", json=payload)
 
 
 def _norm(plate: str) -> str:
@@ -128,10 +157,10 @@ async def check_and_register(plate: str) -> str:
                 f"Saldo: {balance}."
             )
 
-        now = datetime.now(TZ).replace(tzinfo=None)  # portaal verwacht lokale tijd
+        now = datetime.now(TZ)
         until = None
         if UNTIL_TIME:
-            until = datetime.combine(now.date(), time.fromisoformat(UNTIL_TIME))
+            until = datetime.combine(now.date(), time.fromisoformat(UNTIL_TIME), TZ)
             if until <= now:
                 return (
                     f"🌙 {plate} is niet aangemeld, maar het venster tot {UNTIL_TIME} "
